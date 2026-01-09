@@ -1,0 +1,507 @@
+import React, { useState, useMemo } from 'react';
+import { 
+  Plus, Trash2, Upload, CheckCircle, AlertCircle, Calendar, 
+  Building2, FileText, Search, ChevronRight, ClipboardPaste,
+  LayoutDashboard, Users, Zap, TrendingUp, BarChart3, Settings,
+  ArrowUpRight, ArrowDownRight, Filter, ChevronLeft, Clock, Eye,
+  Database, Save, Download, ShieldCheck, Lock, MapPin, ChevronDown, ChevronUp,
+  Activity, Map
+} from 'lucide-react';
+
+const App = () => {
+  // --- ESTADO GLOBAL ---
+  const [activeTab, setActiveTab] = useState('dashboard');
+  const [selectedMonth, setSelectedMonth] = useState('2026-01'); 
+  const [selectedDistributor, setSelectedDistributor] = useState('CEMIG');
+  const [globalSearch, setGlobalSearch] = useState('');
+  const [expandedProtocol, setExpandedProtocol] = useState(null);
+  const [feedback, setFeedback] = useState({ message: '', type: '' });
+
+  // --- GERAÇÃO DINÂMICA DE 10 USINAS ---
+  const usinas = useMemo(() => {
+    const nomes = ['Alpha', 'Beta', 'Gamma', 'Delta', 'Epsilon', 'Zeta', 'Eta', 'Theta', 'Iota', 'Juliet'];
+    const dists = ['CEMIG', 'COPEL', 'CELESC'];
+    return nomes.map((nome, i) => ({
+      id: (i + 1).toString(),
+      uc: `8765432${i}`,
+      apelido: `FV ${nome}`,
+      status: 'Operacional',
+      potencia: (75 + (i * 15)).toString(),
+      fioB: i % 2 === 0 ? 'GD I' : 'GD II',
+      distribuidora: dists[i % 3],
+      leituraDia: (10 + (i % 15)).toString()
+    }));
+  }, []);
+
+  // --- GERAÇÃO DINÂMICA DE 50 CLIENTES ---
+  const clientes = useMemo(() => {
+    return Array.from({ length: 50 }).map((_, i) => {
+      const usinaVinculada = usinas[i % 10];
+      return {
+        id: `c${i + 1}`,
+        uc: `112233${i.toString().padStart(2, '0')}`,
+        nome: `Cliente Corporativo ${i + 1}`,
+        mediaConsumo: 1500 + (i * 450),
+        usinaId: usinaVinculada.id,
+        distribuidora: usinaVinculada.distribuidora,
+        risco: i % 7 === 0 ? 'Médio' : (i % 12 === 0 ? 'Alto' : 'Baixo')
+      };
+    });
+  }, [usinas]);
+
+  // --- GERADOR DE RATEIOS MENSAIS (RECORRENTES) ---
+  const protocolos = useMemo(() => {
+    const list = [];
+    const months = [];
+    for (let y = 2025; y <= 2025; y++) {
+      for (let m = 1; m <= 12; m++) {
+        months.push(`${y}-${String(m).padStart(2, '0')}`);
+      }
+    }
+
+    // Para cada mês e cada usina, gera um rateio distribuindo entre os clientes vinculados
+    months.forEach(month => {
+      usinas.forEach(usina => {
+        const clientesDaUsina = clientes.filter(c => c.usinaId === usina.id);
+        const items = clientesDaUsina.map(c => ({
+          uc: c.uc,
+          pct: 100 / clientesDaUsina.length
+        }));
+
+        list.push({
+          id: `p-${month}-${usina.id}`,
+          usinaId: usina.id,
+          protocolo: `PRT-${usina.apelido.split(' ')[1]}-${month}`,
+          dataEnvio: `${month}-28`,
+          mesRef: month,
+          items: items
+        });
+      });
+    });
+    return list;
+  }, [usinas, clientes]);
+
+  // --- FUNÇÕES DE CÁLCULO DINÂMICO ---
+  const getInjecaoData = (month, usinaId) => {
+    const hash = month.split('').reduce((a, b) => a + b.charCodeAt(0), 0) + parseInt(usinaId);
+    const u = usinas.find(x => x.id === usinaId);
+    const basePrevista = parseInt(u?.potencia || 0) * 160;
+    
+    const prevista = basePrevista + (hash % 1000) - 500;
+    const perf = 1.05 + ((hash % 20) / 100); 
+    let realizada = prevista * perf;
+    
+    if (month >= '2026-01') realizada = prevista * 0.42;
+
+    return { prevista: Math.round(prevista), realizada: Math.round(realizada) };
+  };
+
+  // --- LÓGICA DE SALDO ACUMULADO ---
+  const monthOptions = useMemo(() => {
+    const opts = [];
+    for (let y = 2025; y <= 2026; y++) {
+      for (let m = 1; m <= 12; m++) {
+        const str = `${y}-${String(m).padStart(2, '0')}`;
+        if (y === 2026 && m > 2) break;
+        opts.push(str);
+      }
+    }
+    return opts;
+  }, []);
+
+  const calculateClientFullHistory = (clientId, targetMonth) => {
+    const client = clientes.find(c => c.id === clientId);
+    if (!client) return { saldoAnterior: 0, injetado: 0, consumo: 0, saldoFinal: 0 };
+
+    let saldoAcumulado = 0;
+    let targetData = { saldoAnterior: 0, injetado: 0, consumo: 0, saldoFinal: 0 };
+
+    for (const month of monthOptions) {
+      const isFuture = month >= '2026-01';
+      const activeProtocol = protocolos.find(p => p.usinaId === client.usinaId && p.mesRef <= month);
+      const rateioItem = activeProtocol?.items.find(it => it.uc === client.uc);
+      const cotaPct = rateioItem ? rateioItem.pct : 0;
+
+      const injUsina = getInjecaoData(month, client.usinaId);
+      const injAlocada = (isFuture ? injUsina.prevista : injUsina.realizada) * (cotaPct / 100);
+      const consumoMes = client.mediaConsumo + (month.split('').reduce((a,b)=>a+b.charCodeAt(0),0) % 200);
+
+      const saldoAnterior = saldoAcumulado;
+      // Fórmula: Saldo Final = Saldo Anterior + Injetado - Consumo
+      saldoAcumulado = saldoAnterior + injAlocada - consumoMes;
+
+      if (month === targetMonth) {
+        targetData = {
+          saldoAnterior: saldoAnterior,
+          injetado: injAlocada,
+          consumo: consumoMes,
+          saldoFinal: saldoAcumulado,
+          cotaPct: cotaPct
+        };
+        break;
+      }
+    }
+
+    return targetData;
+  };
+
+  const filteredUsinas = useMemo(() => {
+    return usinas.filter(u => 
+      u.distribuidora === selectedDistributor &&
+      (u.apelido.toLowerCase().includes(globalSearch.toLowerCase()) || u.uc.includes(globalSearch))
+    );
+  }, [usinas, selectedDistributor, globalSearch]);
+
+  const filteredClientes = useMemo(() => {
+    return clientes.filter(c => 
+      c.distribuidora === selectedDistributor &&
+      (c.nome.toLowerCase().includes(globalSearch.toLowerCase()) || c.uc.includes(globalSearch))
+    );
+  }, [clientes, selectedDistributor, globalSearch]);
+
+  const balancoEnergético = useMemo(() => {
+    const inj = filteredUsinas.reduce((acc, u) => {
+      const d = getInjecaoData(selectedMonth, u.id);
+      return { prev: acc.prev + d.prevista, real: acc.real + d.realizada };
+    }, { prev: 0, real: 0 });
+
+    const totalConsumoReal = filteredClientes.reduce((acc, c) => {
+      const hist = calculateClientFullHistory(c.id, selectedMonth);
+      return acc + hist.consumo;
+    }, 0);
+
+    return {
+      gerPrev: (inj.prev / 1000).toFixed(1),
+      gerReal: (inj.real / 1000).toFixed(1),
+      consReal: (totalConsumoReal / 1000).toFixed(1),
+      gap: ((inj.real - totalConsumoReal) / 1000).toFixed(1)
+    };
+  }, [selectedMonth, filteredUsinas, filteredClientes]);
+
+  const formatMonth = (val) => {
+    const [year, month] = val.split('-');
+    const date = new Date(year, month - 1);
+    return date.toLocaleDateString('pt-BR', { month: 'long', year: 'numeric' });
+  };
+
+  return (
+    <div className="min-h-screen bg-[#F6F6F6] font-sans text-[#14211A] flex text-sm overflow-hidden">
+      
+      {/* SIDEBAR */}
+      <aside className="w-64 bg-[#14211A] text-white flex flex-col h-screen shadow-2xl z-20 shrink-0">
+        <div className="p-8 border-b border-white/5 text-center">
+          <img src="https://i.imgur.com/k4S0GSW.png" alt="Logo" className="h-8 mx-auto mb-2" />
+          <p className="text-[9px] text-[#9FD140] font-black tracking-[0.2em] uppercase">Operations Intelligence</p>
+        </div>
+        <nav className="flex-1 p-4 space-y-1">
+          {[
+            { id: 'dashboard', label: 'DASHBOARD', icon: LayoutDashboard },
+            { id: 'rateios', label: 'GESTÃO DE RATEIOS', icon: Zap },
+            { id: 'usinas', label: 'USINAS & GERAÇÃO', icon: Building2 },
+            { id: 'clientes', label: 'CLIENTES & CONSUMO', icon: Users }
+          ].map(item => (
+            <button 
+              key={item.id}
+              onClick={() => setActiveTab(item.id)}
+              className={`w-full flex items-center gap-3 px-4 py-3 rounded-lg text-xs font-bold transition-all ${activeTab === item.id ? 'bg-[#9FD140] text-[#14211A]' : 'hover:bg-white/5 text-white/40'}`}
+            >
+              <item.icon size={18} /> {item.label}
+            </button>
+          ))}
+        </nav>
+      </aside>
+
+      {/* CONTEÚDO PRINCIPAL */}
+      <main className="flex-1 flex flex-col h-screen">
+        <header className="bg-white border-b border-[#e0e0e0] px-8 py-4 flex flex-col md:flex-row justify-between items-center sticky top-0 z-10 gap-4 shrink-0 shadow-sm">
+          <div className="flex items-center gap-4">
+             <div className="flex items-center gap-2 bg-[#F6F6F6] p-1 rounded-lg border border-[#e0e0e0]">
+                <button 
+                  disabled={selectedMonth === '2025-01'}
+                  onClick={() => setSelectedMonth(monthOptions[monthOptions.indexOf(selectedMonth) - 1])} 
+                  className="p-1.5 hover:bg-white rounded transition-all disabled:opacity-20"
+                ><ChevronLeft size={16}/></button>
+                <div className="px-4 flex items-center gap-2">
+                  <Calendar size={14} className="text-[#9FD140]" />
+                  <span className="text-xs font-black uppercase tracking-widest min-w-[130px] text-center">{formatMonth(selectedMonth)}</span>
+                </div>
+                <button 
+                  disabled={selectedMonth === '2026-02'}
+                  onClick={() => setSelectedMonth(monthOptions[monthOptions.indexOf(selectedMonth) + 1])} 
+                  className="p-1.5 hover:bg-white rounded transition-all disabled:opacity-20"
+                ><ChevronRight size={16}/></button>
+             </div>
+
+             <div className="flex items-center gap-2 bg-[#F6F6F6] p-1 rounded-lg border border-[#e0e0e0]">
+                <Map size={14} className="ml-2 text-[#9FD140]"/>
+                <select value={selectedDistributor} onChange={(e) => setSelectedDistributor(e.target.value)} className="bg-transparent text-[10px] font-black uppercase tracking-widest p-1.5 outline-none cursor-pointer">
+                   <option value="CEMIG">CEMIG (MG)</option>
+                   <option value="COPEL">COPEL (PR)</option>
+                   <option value="CELESC">CELESC (SC)</option>
+                </select>
+             </div>
+
+             <div className="relative ml-2">
+                <Search size={14} className="absolute left-3 top-2.5 text-[#8C8C8C]" />
+                <input type="text" placeholder="Buscar usina ou cliente..." value={globalSearch} onChange={(e) => setGlobalSearch(e.target.value)} className="bg-[#F6F6F6] border border-[#e0e0e0] rounded-full py-2 pl-9 pr-4 text-xs w-48 lg:w-64 focus:border-[#9FD140] transition-all outline-none" />
+             </div>
+          </div>
+          <div className="flex items-center gap-3">
+             <div className="w-8 h-8 rounded-full bg-[#14211A] text-[#9FD140] flex items-center justify-center font-bold text-xs">OP</div>
+          </div>
+        </header>
+
+        <div className="p-8 space-y-8 flex-1 overflow-y-auto custom-scrollbar">
+          
+          {/* VIEW: DASHBOARD */}
+          {activeTab === 'dashboard' && (
+            <div className="space-y-8 animate-in fade-in duration-500">
+              <div className="bg-white p-6 rounded-2xl border border-[#e0e0e0] shadow-sm">
+                 <div className="flex justify-between items-center mb-8">
+                    <h3 className="text-[10px] font-black text-[#14211A] uppercase tracking-[0.2em] flex items-center gap-2">
+                       <Activity size={16} className="text-[#9FD140]"/> Balanço Regional - {selectedDistributor}
+                    </h3>
+                 </div>
+                 
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-12">
+                    <div className="space-y-6">
+                       <div className="flex justify-between items-end">
+                          <p className="text-[11px] font-black text-[#8C8C8C] uppercase tracking-wider">Injeção Gerada</p>
+                          <div className="text-right">
+                             <p className="text-2xl font-black text-[#9FD140]">{balancoEnergético.gerReal} MWh</p>
+                             <p className="text-[9px] text-[#8C8C8C] font-bold uppercase tracking-tighter">vs {balancoEnergético.gerPrev} Previsto</p>
+                          </div>
+                       </div>
+                       <div className="w-full bg-[#F6F6F6] h-3 rounded-full overflow-hidden">
+                          <div className="bg-[#9FD140] h-full transition-all duration-1000" style={{ width: `${Math.min((parseFloat(balancoEnergético.gerReal)/parseFloat(balancoEnergético.gerPrev))*100, 100)}%` }}></div>
+                       </div>
+                    </div>
+
+                    <div className="space-y-6">
+                       <div className="flex justify-between items-end">
+                          <p className="text-[11px] font-black text-[#8C8C8C] uppercase tracking-wider">Consumo de Clientes</p>
+                          <div className="text-right">
+                             <p className="text-2xl font-black text-blue-500">{balancoEnergético.consReal} MWh</p>
+                             <p className="text-[9px] text-[#8C8C8C] font-bold uppercase tracking-tighter">Base Consolidada</p>
+                          </div>
+                       </div>
+                       <div className="w-full bg-[#F6F6F6] h-3 rounded-full overflow-hidden">
+                          <div className="bg-blue-500 h-full transition-all duration-1000" style={{ width: '100%' }}></div>
+                       </div>
+                    </div>
+                 </div>
+
+                 <div className="mt-10 p-5 bg-[#14211A] rounded-2xl flex justify-between items-center shadow-lg">
+                    <div className="flex items-center gap-3">
+                       <div className="p-2.5 bg-[#9FD140]/10 rounded-lg text-[#9FD140]"><BarChart3 size={20}/></div>
+                       <div>
+                          <p className="text-[10px] font-black text-white/40 uppercase tracking-widest">Performance Líquida</p>
+                          <p className="text-xs text-white/60">Saldo energético após compensação de todos os clientes da praça</p>
+                       </div>
+                    </div>
+                    <div className="text-right">
+                       <h4 className={`text-2xl font-black ${parseFloat(balancoEnergético.gap) >= 0 ? 'text-[#9FD140]' : 'text-red-400'}`}>
+                          {parseFloat(balancoEnergético.gap) > 0 ? '+' : ''}{balancoEnergético.gap} MWh
+                       </h4>
+                    </div>
+                 </div>
+              </div>
+
+              <div className="bg-white p-6 rounded-xl border border-[#e0e0e0] shadow-sm">
+                <h3 className="text-[10px] font-black text-[#8C8C8C] uppercase tracking-widest mb-6">Status dos Ativos ({filteredUsinas.length} usinas)</h3>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                   {filteredUsinas.map(u => {
+                      const data = getInjecaoData(selectedMonth, u.id);
+                      const perf = (data.realizada / data.prevista) * 100;
+                      return (
+                         <div key={u.id} className="p-4 bg-[#F6F6F6] rounded-xl border border-[#e0e0e0]">
+                            <div className="flex justify-between mb-2">
+                               <span className="font-black text-xs">{u.apelido}</span>
+                               <span className={`text-[10px] font-black ${perf >= 100 ? 'text-[#9FD140]' : 'text-amber-500'}`}>{perf.toFixed(1)}%</span>
+                            </div>
+                            <div className="w-full bg-white h-1 rounded-full overflow-hidden">
+                               <div className="bg-[#9FD140] h-full" style={{ width: `${Math.min(perf, 100)}%` }}></div>
+                            </div>
+                         </div>
+                      )
+                   })}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* VIEW: RATEIOS */}
+          {activeTab === 'rateios' && (
+            <div className="space-y-8 animate-in slide-in-from-bottom-4 duration-500">
+               <div className="bg-white rounded-xl border border-[#e0e0e0] overflow-hidden shadow-sm">
+                  <div className="p-6 bg-[#F6F6F6] border-b border-[#e0e0e0] flex justify-between items-center text-[10px] font-black uppercase tracking-widest">
+                     <span>Histórico de Protocolos - {selectedDistributor}</span>
+                  </div>
+                  <div className="divide-y divide-[#F6F6F6]">
+                     {protocolos.filter(p => {
+                        const plant = usinas.find(u => u.id === p.usinaId);
+                        return plant?.distribuidora === selectedDistributor && p.mesRef === selectedMonth;
+                     }).map(p => {
+                        const plant = usinas.find(u => u.id === p.usinaId);
+                        const isExpanded = expandedProtocol === p.id;
+                        return (
+                           <div key={p.id} className="hover:bg-gray-50 transition-all">
+                              <div onClick={() => setExpandedProtocol(isExpanded ? null : p.id)} className="p-6 flex justify-between items-center cursor-pointer">
+                                 <div className="flex items-center gap-4">
+                                    <div className="p-3 bg-white border border-[#e0e0e0] rounded-lg shadow-sm"><FileText size={18}/></div>
+                                    <div>
+                                       <p className="text-xs font-black text-[#14211A]">{plant?.apelido}</p>
+                                       <p className="text-[10px] text-[#8C8C8C] font-bold">Ref: {p.protocolo}</p>
+                                    </div>
+                                 </div>
+                                 <div className="flex items-center gap-4">
+                                    <span className="text-[10px] font-black bg-[#9FD140]/10 text-[#9FD140] px-2 py-1 rounded">{p.items.length} CLIENTES</span>
+                                    {isExpanded ? <ChevronUp size={14}/> : <ChevronDown size={14}/>}
+                                 </div>
+                              </div>
+                              {isExpanded && (
+                                <div className="px-6 pb-6">
+                                   <div className="bg-[#14211A] rounded-xl overflow-hidden border border-white/5">
+                                      <div className="grid grid-cols-2 text-[9px] font-black text-[#9FD140] uppercase px-6 py-3 border-b border-white/5 tracking-widest">
+                                         <span>Unidade Consumidora</span>
+                                         <span className="text-right">Percentual (%)</span>
+                                      </div>
+                                      {p.items.map((item, idx) => (
+                                         <div key={idx} className="grid grid-cols-2 text-white px-6 py-3 text-xs border-b border-white/5">
+                                            <span>UC {item.uc}</span>
+                                            <span className="text-right font-black text-[#9FD140]">{item.pct.toFixed(2)}%</span>
+                                         </div>
+                                      ))}
+                                   </div>
+                                </div>
+                              )}
+                           </div>
+                        )
+                     })}
+                  </div>
+               </div>
+            </div>
+          )}
+
+          {/* VIEW: USINAS */}
+          {activeTab === 'usinas' && (
+            <div className="space-y-8 animate-in fade-in duration-500">
+               <div className="bg-white rounded-xl border border-[#e0e0e0] overflow-hidden shadow-sm">
+                  <div className="p-6 bg-[#F6F6F6] border-b border-[#e0e0e0] flex justify-between items-center">
+                     <h3 className="text-[10px] font-black uppercase tracking-widest">Geração Mensal - {selectedDistributor}</h3>
+                  </div>
+                  <table className="w-full text-left text-xs">
+                     <thead className="bg-[#F6F6F6] text-[9px] font-black text-[#8C8C8C] uppercase tracking-widest border-b border-[#e0e0e0]">
+                        <tr>
+                           <th className="px-8 py-5">Usina</th>
+                           <th className="px-8 py-5 text-center">Previsto (kWh)</th>
+                           <th className="px-8 py-5 text-center">Realizado (kWh)</th>
+                           <th className="px-8 py-5 text-center">Eficiência</th>
+                           <th className="px-8 py-5">Categoria</th>
+                        </tr>
+                     </thead>
+                     <tbody className="divide-y divide-[#F6F6F6]">
+                        {filteredUsinas.map(u => {
+                          const data = getInjecaoData(selectedMonth, u.id);
+                          const perf = (data.realizada / data.prevista) * 100;
+                          return (
+                            <tr key={u.id} className="hover:bg-gray-50 transition-colors">
+                               <td className="px-8 py-5 font-black uppercase tracking-tighter">{u.apelido}</td>
+                               <td className="px-8 py-5 text-center font-bold">{data.prevista.toLocaleString()}</td>
+                               <td className="px-8 py-5 text-center font-black text-[#9FD140]">{data.realizada.toLocaleString()}</td>
+                               <td className="px-8 py-5 text-center">
+                                  <span className={`font-black ${perf >= 100 ? 'text-[#9FD140]' : 'text-amber-500'}`}>{perf.toFixed(1)}%</span>
+                               </td>
+                               <td className="px-8 py-5">
+                                  <span className="px-2 py-1 bg-white border border-[#e0e0e0] rounded-full text-[10px] font-black uppercase">{u.fioB}</span>
+                               </td>
+                            </tr>
+                          )
+                        })}
+                     </tbody>
+                  </table>
+               </div>
+            </div>
+          )}
+
+          {/* VIEW: CLIENTES */}
+          {activeTab === 'clientes' && (
+            <div className="bg-white rounded-2xl border border-[#e0e0e0] overflow-hidden animate-in fade-in h-full flex flex-col shadow-sm">
+              <div className="p-8 bg-[#F6F6F6] border-b border-[#e0e0e0] flex justify-between items-center">
+                 <h3 className="text-[10px] font-black uppercase tracking-[0.2em] text-[#14211A]">Extrato Acumulado - {selectedDistributor}</h3>
+                 <span className="text-[9px] font-black text-[#8C8C8C] uppercase tracking-widest italic">Cálculo: Saldo Final = Saldo Anterior + Injetado - Consumo</span>
+              </div>
+              <div className="overflow-x-auto flex-1 custom-scrollbar">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-[#F6F6F6] text-[9px] font-black text-[#8C8C8C] uppercase tracking-[0.2em] border-b border-[#e0e0e0] sticky top-0 z-10">
+                    <tr>
+                      <th className="px-8 py-6">Beneficiário</th>
+                      <th className="px-8 py-6 text-center">Saldo Anterior</th>
+                      <th className="px-8 py-6 text-center">Injetado</th>
+                      <th className="px-8 py-6 text-center">Consumo Real</th>
+                      <th className="px-8 py-6 text-center">Saldo Final (kWh)</th>
+                      <th className="px-8 py-6 text-center">Crédito/Débito</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#F6F6F6]">
+                    {filteredClientes.map((c) => {
+                      const hist = calculateClientFullHistory(c.id, selectedMonth);
+                      return (
+                        <tr key={c.id} className="hover:bg-gray-50 transition-colors">
+                          <td className="px-8 py-5">
+                             <p className="font-black text-[#14211A] leading-tight mb-0.5 uppercase tracking-tighter">{c.nome}</p>
+                             <p className="text-[10px] text-[#8C8C8C] font-bold">UC: {c.uc} | Usina: {usinas.find(u=>u.id===c.usinaId)?.apelido}</p>
+                          </td>
+                          <td className="px-8 py-5 text-center text-[#8C8C8C] font-bold">
+                             {hist.saldoAnterior.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                          </td>
+                          <td className="px-8 py-5 text-center font-black text-[#9FD140]">
+                             +{hist.injetado.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                             <p className="text-[8px] opacity-60">({hist.cotaPct.toFixed(1)}% COTA)</p>
+                          </td>
+                          <td className="px-8 py-5 text-center font-black text-blue-500">
+                             -{hist.consumo.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          </td>
+                          <td className={`px-8 py-5 text-center font-black text-lg ${hist.saldoFinal >= 0 ? 'text-[#14211A]' : 'text-red-500'}`}>
+                             {hist.saldoFinal.toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                          </td>
+                          <td className="px-8 py-5 text-center">
+                             <span className={`px-3 py-1 rounded-full text-[9px] font-black uppercase ${hist.saldoFinal >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                {hist.saldoFinal >= 0 ? 'CREDOR' : 'DEVEDOR'}
+                             </span>
+                          </td>
+                        </tr>
+                      )
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+        </div>
+      </main>
+
+      {/* FEEDBACK TOAST */}
+      {feedback.message && (
+        <div className="fixed bottom-8 right-8 px-6 py-4 bg-[#14211A] text-[#9FD140] rounded-2xl shadow-2xl flex items-center gap-4 animate-in slide-in-from-right-10 duration-300 z-50 border border-white/10">
+          <div className="bg-[#9FD140]/20 p-1.5 rounded-lg"><CheckCircle size={20} /></div>
+          <span className="font-black text-xs uppercase tracking-widest">{feedback.message}</span>
+        </div>
+      )}
+
+      <style dangerouslySetInnerHTML={{ __html: `
+        @import url('https://fonts.googleapis.com/css2?family=Sen:wght@400;700;800&display=swap');
+        body { font-family: 'Sen', sans-serif; background-color: #F6F6F6; }
+        .custom-scrollbar::-webkit-scrollbar { width: 6px; height: 6px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #e0e0e0; border-radius: 10px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #9FD140; }
+        @keyframes fade-in { from { opacity: 0; } to { opacity: 1; } }
+        .animate-in { animation: fade-in 0.3s ease-out; }
+      `}} />
+    </div>
+  );
+};
+
+export default App;
